@@ -1,7 +1,16 @@
 {
   "chat_id": null,
   "threshold_eur": 50,
-  "routes": [["KUT", "BCN"], ["BCN", "KUT"]],
+  "routes": [
+    [
+      "KUT",
+      "BCN"
+    ],
+    [
+      "BCN",
+      "KUT"
+    ]
+  ],
   "months_ahead": 6,
   "update_offset": 0
 }
