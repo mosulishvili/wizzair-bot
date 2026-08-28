@@ -1,5 +1,5 @@
 {
-  "chat_id": null,
+  "chat_id": 898291410,
   "threshold_eur": 50,
   "routes": [
     [
@@ -12,5 +12,5 @@
     ]
   ],
   "months_ahead": 6,
-  "update_offset": 0
+  "update_offset": 538426875
 }
