@@ -12,5 +12,6 @@
     ]
   ],
   "months_ahead": 6,
-  "update_offset": 538426875
+  "update_offset": 538426875,
+  "api_version": "29.14.0"
 }
