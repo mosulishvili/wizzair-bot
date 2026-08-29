@@ -13,10 +13,17 @@ Runs ONCE per invocation (the workflow calls it on a schedule, e.g. every
 
 The bot token is read from the TELEGRAM_BOT_TOKEN environment variable
 (set as a GitHub Actions secret) - never hardcode it in this file.
+
+WizzAir has no official public API and changes the version number in
+their internal endpoint (be.wizzair.com/<version>/Api/...) periodically.
+This script auto-discovers the current version from wizzair.com when
+the cached one stops working, and caches the working version in
+config.json so most runs don't need to re-discover it.
 """
 
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 from datetime import date, timedelta
@@ -29,8 +36,11 @@ DEFAULT_CONFIG = {
     "threshold_eur": 50,
     "routes": [["KUT", "BCN"], ["BCN", "KUT"]],
     "months_ahead": 6,
-    "update_offset": 0
+    "update_offset": 0,
+    "api_version": "27.5.0"
 }
+
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 
 def load_json(path, default):
@@ -121,13 +131,46 @@ def handle_updates(cfg):
 
 
 # ---------------------------------------------------------------------------
-# WizzAir price lookup (unofficial endpoint - may change without notice)
+# WizzAir price lookup (unofficial endpoint - version changes over time)
 # ---------------------------------------------------------------------------
 
-WIZZ_TIMETABLE_URL = "https://be.wizzair.com/27.5.0/Api/search/timetable"
+VERSION_RE = re.compile(r"be\.wizzair\.com/(\d+\.\d+\.\d+)/Api", re.IGNORECASE)
 
 
-def fetch_cheapest_fares(origin, destination, date_from, date_to):
+def _http_get_text(url):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.read().decode("utf-8", errors="ignore")
+
+
+def discover_api_version():
+    """Try to find the current be.wizzair.com/<version>/Api prefix by
+    scanning wizzair.com's timetable page and its linked JS bundles."""
+    try:
+        html = _http_get_text("https://wizzair.com/en-gb/flights/timetable")
+    except Exception as e:
+        print(f"[wizzair] could not load timetable page: {e}")
+        return None
+
+    m = VERSION_RE.search(html)
+    if m:
+        return m.group(1)
+
+    script_srcs = re.findall(r'<script[^>]+src="([^"]+\.js)"', html)
+    for src in script_srcs[:15]:
+        url = src if src.startswith("http") else "https://wizzair.com" + src
+        try:
+            js = _http_get_text(url)
+        except Exception:
+            continue
+        m2 = VERSION_RE.search(js)
+        if m2:
+            return m2.group(1)
+
+    return None
+
+
+def fetch_cheapest_fares(origin, destination, date_from, date_to, version):
     payload = {
         "flightList": [{
             "departureStation": origin,
@@ -140,21 +183,18 @@ def fetch_cheapest_fares(origin, destination, date_from, date_to):
         "childCount": 0,
         "infantCount": 0
     }
+    url = f"https://be.wizzair.com/{version}/Api/search/timetable"
     req = urllib.request.Request(
-        WIZZ_TIMETABLE_URL,
+        url,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json;charset=UTF-8",
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": UA,
             "Accept": "application/json"
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        print(f"[wizzair] fetch failed for {origin}->{destination}: {e}")
-        return []
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
 
     fares = []
     for flight in data.get("outboundFlights", []):
@@ -165,6 +205,28 @@ def fetch_cheapest_fares(origin, destination, date_from, date_to):
     return fares
 
 
+def fetch_with_version_fallback(cfg, origin, destination, date_from, date_to):
+    version = cfg.get("api_version", DEFAULT_CONFIG["api_version"])
+    try:
+        return fetch_cheapest_fares(origin, destination, date_from, date_to, version)
+    except Exception as e:
+        print(f"[wizzair] fetch failed for {origin}->{destination} with version {version}: {e}")
+
+    print("[wizzair] trying to auto-discover current API version...")
+    new_version = discover_api_version()
+    if not new_version or new_version == version:
+        print("[wizzair] version discovery failed or unchanged - giving up for this run.")
+        return []
+
+    print(f"[wizzair] discovered version {new_version}, retrying...")
+    cfg["api_version"] = new_version
+    try:
+        return fetch_cheapest_fares(origin, destination, date_from, date_to, new_version)
+    except Exception as e:
+        print(f"[wizzair] retry failed for {origin}->{destination} with version {new_version}: {e}")
+        return []
+
+
 def check_prices(cfg, state):
     today = date.today()
     horizon = today + timedelta(days=30 * cfg.get("months_ahead", 6))
@@ -172,7 +234,7 @@ def check_prices(cfg, state):
     alerted = state.setdefault("alerted", {})
 
     for origin, destination in cfg.get("routes", []):
-        fares = fetch_cheapest_fares(origin, destination, today, horizon)
+        fares = fetch_with_version_fallback(cfg, origin, destination, today, horizon)
         for dep_date, price in fares:
             key = f"{origin}-{destination}-{dep_date}"
             if price <= threshold and alerted.get(key) != price:
@@ -199,3 +261,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+  
