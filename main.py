@@ -181,7 +181,10 @@ def fetch_cheapest_fares(origin, destination, date_from, date_to, version):
         "priceType": "regular",
         "adultCount": 1,
         "childCount": 0,
-        "infantCount": 0
+        "infantCount": 0,
+        "isFlightChange": False,
+        "isSeniorOrStudent": False,
+        "dayInterval": 1
     }
     url = f"https://be.wizzair.com/{version}/Api/search/timetable"
     req = urllib.request.Request(
