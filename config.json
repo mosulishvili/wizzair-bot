@@ -1,6 +1,6 @@
 {
   "chat_id": 898291410,
-  "threshold_eur": 50,
+  "threshold_eur": 100.0,
   "routes": [
     [
       "KUT",
@@ -12,6 +12,6 @@
     ]
   ],
   "months_ahead": 6,
-  "update_offset": 538426876,
+  "update_offset": 538426878,
   "api_version": "29.16.1"
 }
