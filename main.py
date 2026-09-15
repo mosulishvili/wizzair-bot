@@ -24,6 +24,7 @@ config.json so most runs don't need to re-discover it.
 import json
 import os
 import re
+import time
 import urllib.request
 import urllib.error
 from datetime import date, timedelta
@@ -58,7 +59,7 @@ def save_json(path, data):
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 
-def tg_api(method, params=None):
+def tg_api(method, params=None, retries=3, backoff=5):
     if not TOKEN:
         print("TELEGRAM_BOT_TOKEN is not set - add it as a repo secret.")
         return None
@@ -67,12 +68,15 @@ def tg_api(method, params=None):
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}
     )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        print(f"[telegram] request failed: {e}")
-        return None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError) as e:
+            print(f"[telegram] request failed (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+    return None
 
 
 def tg_send(cfg, text):
@@ -137,10 +141,19 @@ def handle_updates(cfg):
 VERSION_RE = re.compile(r"be\.wizzair\.com/(\d+\.\d+\.\d+)/Api", re.IGNORECASE)
 
 
-def _http_get_text(url):
+def _http_get_text(url, retries=2, backoff=5):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return resp.read().decode("utf-8", errors="ignore")
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                return resp.read().decode("utf-8", errors="ignore")
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_error = e
+            print(f"[wizzair] GET failed (attempt {attempt}/{retries}) for {url}: {e}")
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+    raise last_error
 
 
 def discover_api_version():
@@ -170,7 +183,7 @@ def discover_api_version():
     return None
 
 
-def fetch_cheapest_fares(origin, destination, date_from, date_to, version):
+def fetch_cheapest_fares(origin, destination, date_from, date_to, version, retries=2, backoff=5):
     payload = {
         "flightList": [{
             "departureStation": origin,
@@ -196,8 +209,22 @@ def fetch_cheapest_fares(origin, destination, date_from, date_to, version):
             "Accept": "application/json"
         },
     )
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+
+    last_error = None
+    data = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            break
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_error = e
+            print(f"[wizzair] fare request failed (attempt {attempt}/{retries}) for "
+                  f"{origin}->{destination}: {e}")
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+    if data is None:
+        raise last_error
 
     fares = []
     for flight in data.get("outboundFlights", []):
@@ -264,4 +291,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-  
